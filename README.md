@@ -1,2 +1,5 @@
-# docs-as-code
-Docsdocsdocsdocsdocs and DOCS
+# Docs as Code
+
+Практическая работа по настройке среды Docs as Code.
+
+Автор: Шестаков Никита
