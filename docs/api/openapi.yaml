@@ -1,0 +1,362 @@
+openapi: 3.0.3
+info:
+  title: API автоматического краткого пересказа
+  description: |
+    API сервиса, который принимает текст и возвращает его краткий пересказ
+    с сохранением основных идей и тезисов.
+
+    Пересказ выполняется асинхронно. Запрос сначала попадает в очередь задач,
+    а статус и результат клиент получает через `GET /summaries/{id}`.
+  version: 1.0.0
+servers:
+  - url: https://example.com/api/v1
+    description: Условный адрес, реальный сервер в учебном проекте не разрабатывается
+tags:
+  - name: Пересказы
+    description: Создание пересказа, получение результата и доработка по замечаниям
+paths:
+  /summaries:
+    post:
+      tags:
+        - Пересказы
+      summary: Отправить текст на пересказ
+      description: |
+        Принимает текст и ставит задачу на пересказ в очередь. Ответ приходит сразу,
+        до завершения обработки, поэтому в нём есть ID запроса и статус `QUEUED`,
+        но ещё нет пересказа.
+
+        Результат можно получить через `GET /summaries/{id}`.
+      operationId: createSummary
+      requestBody:
+        description: Текст для пересказа
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSummaryRequest'
+      responses:
+        '202':
+          description: Запрос принят и поставлен в очередь
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryRequest'
+              example:
+                id: 123
+                status: QUEUED
+                sourceText: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+                createdAt: '2026-11-05T12:00:00Z'
+        '400':
+          description: Некорректный запрос, например передан пустой текст
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: EMPTY_TEXT
+                message: Текст не должен быть пустым
+                hint: Вставьте текст в поле ввода и отправьте запрос ещё раз
+        '413':
+          description: Текст длиннее допустимого размера
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: TEXT_TOO_LONG
+                message: Текст превышает 100000 символов
+                hint: Сократите текст или разделите его на несколько частей
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/QueueUnavailable'
+  /summaries/{id}:
+    get:
+      tags:
+        - Пересказы
+      summary: Получить статус и результат пересказа
+      description: |
+        Возвращает текущий статус обработки и последнюю готовую версию пересказа.
+        Клиент вызывает этот endpoint, пока статус не станет `DONE` или `ERROR`.
+
+        Ошибка модели не приводит к коду `5xx` у этого запроса. Она возвращается
+        с кодом `200` в виде статуса `ERROR` и поля `error`.
+      operationId: getSummary
+      parameters:
+        - $ref: '#/components/parameters/SummaryRequestId'
+      responses:
+        '200':
+          description: Запрос найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryRequest'
+              examples:
+                processing:
+                  summary: Пересказ ещё выполняется
+                  value:
+                    id: 123
+                    status: PROCESSING
+                    sourceText: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+                    createdAt: '2026-11-05T12:00:00Z'
+                done:
+                  summary: Пересказ готов
+                  value:
+                    id: 123
+                    status: DONE
+                    sourceText: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+                    createdAt: '2026-11-05T12:00:00Z'
+                    summary:
+                      id: 456
+                      version: 1
+                      text: ИИ применяется в образовании для проверки работ и подбора материалов.
+                      modelVersion: summarizer-1.0
+                      createdAt: '2026-11-05T12:00:20Z'
+                error:
+                  summary: Обработка завершилась ошибкой
+                  value:
+                    id: 123
+                    status: ERROR
+                    sourceText: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+                    createdAt: '2026-11-05T12:00:00Z'
+                    error:
+                      code: MODEL_UNAVAILABLE
+                      message: Модель временно недоступна
+                      hint: Отправьте текст ещё раз через несколько минут
+        '404':
+          $ref: '#/components/responses/SummaryRequestNotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /summaries/{id}/revisions:
+    post:
+      tags:
+        - Пересказы
+      summary: Переделать пересказ по замечаниям
+      description: |
+        Ставит в очередь повторный пересказ исходного текста с учётом инструкций
+        пользователя. Доступно, только когда запрос находится в статусе `DONE`.
+
+        Пока новая версия не готова, в поле `summary` остаётся предыдущая. Когда
+        обработка завершится, через `GET /summaries/{id}` придёт новая версия с
+        увеличенным значением `version`. Новую версию тоже можно переделать.
+      operationId: createSummaryRevision
+      parameters:
+        - $ref: '#/components/parameters/SummaryRequestId'
+      requestBody:
+        description: Инструкции по доработке пересказа
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRevisionRequest'
+      responses:
+        '202':
+          description: Запрос на доработку принят и поставлен в очередь
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummaryRequest'
+              example:
+                id: 123
+                status: QUEUED
+                sourceText: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+                createdAt: '2026-11-05T12:00:00Z'
+                summary:
+                  id: 456
+                  version: 1
+                  text: ИИ применяется в образовании для проверки работ и подбора материалов.
+                  modelVersion: summarizer-1.0
+                  createdAt: '2026-11-05T12:00:20Z'
+        '400':
+          description: Некорректный запрос, например не переданы инструкции
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: EMPTY_INSTRUCTIONS
+                message: Инструкции не должны быть пустыми
+                hint: Опишите, что нужно изменить в пересказе
+        '404':
+          $ref: '#/components/responses/SummaryRequestNotFound'
+        '409':
+          description: Запрос не находится в статусе `DONE`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                code: REVISION_NOT_ALLOWED
+                message: Пересказ сейчас нельзя переделать, он ещё не готов
+                hint: Дождитесь статуса DONE и отправьте замечания ещё раз
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/QueueUnavailable'
+components:
+  parameters:
+    SummaryRequestId:
+      name: id
+      in: path
+      required: true
+      description: ID запроса на пересказ
+      schema:
+        type: integer
+        format: int64
+      example: 123
+  responses:
+    SummaryRequestNotFound:
+      description: Запрос на пересказ не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: SUMMARY_REQUEST_NOT_FOUND
+            message: Запрос на пересказ не найден
+            hint: Проверьте ID запроса или отправьте текст заново
+    InternalError:
+      description: Внутренняя ошибка сервиса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: INTERNAL_ERROR
+            message: Внутренняя ошибка сервиса
+            hint: Повторите запрос позже
+    QueueUnavailable:
+      description: Очередь задач временно недоступна, запрос не принят
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: QUEUE_UNAVAILABLE
+            message: Сервис временно не принимает новые запросы
+            hint: Повторите запрос через несколько минут
+  schemas:
+    CreateSummaryRequest:
+      type: object
+      description: Тело запроса на создание пересказа
+      required:
+        - text
+      properties:
+        text:
+          type: string
+          description: Текст, который нужно пересказать
+          minLength: 1
+          maxLength: 100000
+          example: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+    CreateRevisionRequest:
+      type: object
+      description: Тело запроса на доработку пересказа
+      required:
+        - instructions
+      properties:
+        instructions:
+          type: string
+          description: Что нужно изменить в пересказе
+          minLength: 1
+          maxLength: 2000
+          example: Сделай пересказ короче и убери второстепенные детали
+    SummaryRequest:
+      type: object
+      description: Запрос на пересказ и текущее состояние его обработки
+      required:
+        - id
+        - status
+        - sourceText
+        - createdAt
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: ID запроса на пересказ
+          example: 123
+        status:
+          $ref: '#/components/schemas/ProcessingStatus'
+        sourceText:
+          type: string
+          description: Исходный текст
+          example: Искусственный интеллект всё чаще используется в образовании. Он помогает проверять работы и подбирать учебные материалы.
+        createdAt:
+          type: string
+          format: date-time
+          description: Время создания запроса
+          example: '2026-11-05T12:00:00Z'
+        summary:
+          allOf:
+            - $ref: '#/components/schemas/Summary'
+          description: Последняя готовая версия пересказа. Отсутствует, пока первая версия не готова
+        error:
+          allOf:
+            - $ref: '#/components/schemas/Error'
+          description: Причина сбоя. Есть только при статусе `ERROR`
+    Summary:
+      type: object
+      description: Версия краткого пересказа, созданная ML-моделью
+      required:
+        - id
+        - version
+        - text
+        - modelVersion
+        - createdAt
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: ID версии пересказа
+          example: 456
+        version:
+          type: integer
+          description: Номер версии, увеличивается при каждой доработке
+          minimum: 1
+          example: 1
+        text:
+          type: string
+          description: Текст краткого пересказа
+          example: ИИ применяется в образовании для проверки работ и подбора материалов.
+        modelVersion:
+          type: string
+          description: Версия ML-модели, создавшей пересказ
+          example: summarizer-1.0
+        createdAt:
+          type: string
+          format: date-time
+          description: Время создания версии
+          example: '2026-11-05T12:00:20Z'
+    ProcessingStatus:
+      type: string
+      description: |
+        Статус обработки запроса:
+
+        - `QUEUED` — запрос ждёт в очереди;
+        - `PROCESSING` — ML-модель выполняет пересказ;
+        - `DONE` — пересказ готов;
+        - `ERROR` — обработка завершилась ошибкой.
+      enum:
+        - QUEUED
+        - PROCESSING
+        - DONE
+        - ERROR
+      example: QUEUED
+    Error:
+      type: object
+      description: Описание ошибки для показа пользователю
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Машиночитаемый код ошибки
+          example: EMPTY_TEXT
+        message:
+          type: string
+          description: Что произошло
+          example: Текст не должен быть пустым
+        hint:
+          type: string
+          description: Что пользователю делать дальше
+          example: Вставьте текст в поле ввода и отправьте запрос ещё раз
