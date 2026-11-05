@@ -20,6 +20,10 @@ nav:
       - Требования: project/requirements.md
       - Диаграммы: project/diagrams.md
   - API: api/index.md
+  - ML:
+      - Model Card: ml/model-card.md
+      - Data Sheet: ml/dataset.md
+      - Риски: ml/risks.md
 
 extra_javascript:
   - https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js
